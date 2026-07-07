@@ -3,12 +3,12 @@
 Survey plots: 6-panel per-day overview for EZIE geomagnetic data.
 
 Panels (shared x-axis):
-  1. FRDH            - FRD ground station horizontal field
-  2. EZIEH           - EZIE satellite horizontal field
-  3. residual        - EZIEH minus linear FRDH prediction
-  4. predicted noise - XGBoost output
-  5. EZIEH denoised  - EZIEH minus predicted noise
-  6. ctemp           - satellite temperature
+  1. FRDH                       - FRD ground station horizontal field
+  2. EZIEH                      - EZIE satellite horizontal field
+  3. Estimated Bh noise         - EZIEH minus linear FRDH prediction
+  4. ML Predicted Bh noise      - XGBoost output
+  5. EZIEH denoised             - EZIEH minus predicted noise
+  6. ctemp                      - satellite temperature
 
 Usage
 -----
@@ -206,10 +206,11 @@ def _detect_resolution(model_path: Path):
 PANEL_CFG = [
     ("FRDH",            "FRDH (nT)",             "#2ca02c"),
     ("EZIEH",           "EZIEH (nT)",             "#1f77b4"),
-    ("residual",        "residual (nT)",           "#7f7f7f"),
-    ("noise_pred",      "predicted noise (nT)",    "#d62728"),
-    ("EZIEH_denoised",  "EZIEH denoised (nT)",     "#9467bd"),
     ("ctemp",           "ctemp (°C)",              "#8c564b"),
+    ("residual",        "Estimated Bh noise (nT)",           "#7f7f7f"),
+    ("noise_pred",      "ML Predicted Bh noise (nT)",    "#d62728"),
+    ("EZIEH_denoised",  "EZIEH denoised (nT)",     "#9467bd"),
+    
 ]
 
 

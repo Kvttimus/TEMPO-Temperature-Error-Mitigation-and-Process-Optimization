@@ -39,7 +39,7 @@ ax.scatter(quiet["ctemp_range_degC"], quiet["residual_range_nT"],
            s=28, alpha=0.75, color="#1f77b4", label=f"Quiet days (n={len(quiet)})", zorder=3)
 ax.scatter(storm["ctemp_range_degC"], storm["residual_range_nT"],
            s=40, alpha=0.85, color="#d62728", marker="^",
-           label=f"Storm days (n={len(storm)}, residual range > {STORM_THRESHOLD} nT)", zorder=4)
+           label=f"Storm days (n={len(storm)})", zorder=4)
 
 # Regression line over all days
 x_line = np.linspace(df["ctemp_range_degC"].min(), df["ctemp_range_degC"].max(), 200)
@@ -57,6 +57,7 @@ ax.set_title(
 ax.tick_params(labelsize=11)
 ax.legend(fontsize=10, loc="upper left")
 ax.grid(True, linewidth=0.4, alpha=0.4)
+ax.set_ylim(top=10000)
 
 # Annotate r values
 ax.text(0.97, 0.97,
