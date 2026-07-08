@@ -1,28 +1,29 @@
-#!/usr/bin/env python3
 """
-Run the best saved XGBoost Bh-noise model (65-feature version) on new data.
+Run the best saved XGBoost Bh-noise model (66-feature version, 1-second
+resolution) on new data.
 
-This matches the model trained in step4.1 with:
+This matches the default model trained by step3.2_xgboost_noise_model.py
+(--mode filtered --resolution 1sec) with:
   - Rolling anomalies 30s → 12h  (10 timescales)
   - Cumulative (midnight-anchored) anomalies
   - EMA anomalies at 4 half-lives (1800s, 7200s, 21600s, 43200s)
-  - Local volatility (rolling std at 5 timescales each)
+  - Local volatility (rolling std at 5 timescales, both EZIEH and ctemp)
   - Cross-product interactions at 10 timescales
   - Squared non-linear terms for 8 long windows
-  Total: 65 features derived from ctemp + EZIEH only.
+  Total: 66 features derived from ctemp + EZIEH only.
 
 Model file: regression/xgboost_noise_model.json
 
 Usage
 -----
   # Single day CSV:
-  python step4.2b_xgboost_inference.py regression/predicted/20250501.csv
+  python step3.3_xgboost_inference.py regression/predicted/20250501.csv
 
   # Entire folder, output alongside originals:
-  python step4.2b_xgboost_inference.py regression/predicted/
+  python step3.3_xgboost_inference.py regression/predicted/
 
   # Folder → different output folder:
-  python step4.2b_xgboost_inference.py regression/predicted/ --out_dir regression/inferred/
+  python step3.3_xgboost_inference.py regression/predicted/ --out_dir regression/inferred/
 """
 from __future__ import annotations
 
@@ -40,7 +41,7 @@ MODEL_PATH = Path("regression/xgboost_noise_model.json")
 # ---------------------------------------------------------------------------
 
 def add_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Compute all 65 anomaly-based features from ctemp and EZIEH.
+    """Compute all 66 anomaly-based features from ctemp and EZIEH.
     All features are causal (only look backward), safe for real-time use.
     Input df must have columns: time, EZIEH, ctemp."""
     df = df.copy().sort_values("time").reset_index(drop=True)
@@ -74,6 +75,7 @@ def add_features(df: pd.DataFrame) -> pd.DataFrame:
     df["EZIEH_std14400"] = e.rolling(14400, min_periods=2).std()
     df["ctemp_std30"]    = c.rolling(30,    min_periods=2).std()
     df["ctemp_std300"]   = c.rolling(300,   min_periods=2).std()
+    df["ctemp_std900"]   = c.rolling(900,   min_periods=2).std()
     df["ctemp_std3600"]  = c.rolling(3600,  min_periods=2).std()
     df["ctemp_std14400"] = c.rolling(14400, min_periods=2).std()
 
@@ -113,7 +115,8 @@ FEATURE_COLS = [
     # Volatility
     "EZIEH_std30",  "EZIEH_std300",  "EZIEH_std900",
     "EZIEH_std3600","EZIEH_std14400",
-    "ctemp_std30",  "ctemp_std300",  "ctemp_std3600", "ctemp_std14400",
+    "ctemp_std30",  "ctemp_std300",  "ctemp_std900",
+    "ctemp_std3600", "ctemp_std14400",
     # Interactions
     "anom30_inter",    "anom300_inter",   "anom900_inter",
     "anom1800_inter",  "anom3600_inter",  "anom7200_inter",
@@ -161,7 +164,7 @@ def run_inference(csv_path: Path, model: XGBRegressor, out_dir: Path | None) -> 
 
 
 def main():
-    parser = argparse.ArgumentParser(description="XGBoost Bh-noise inference (65-feature model)")
+    parser = argparse.ArgumentParser(description="XGBoost Bh-noise inference (66-feature model)")
     parser.add_argument("input", help="CSV file or folder of CSVs")
     parser.add_argument("--model",   default=str(MODEL_PATH),
                         help=f"Path to model JSON (default: {MODEL_PATH})")
@@ -173,7 +176,7 @@ def main():
     if not model_path.exists():
         raise FileNotFoundError(
             f"Model not found: {model_path}\n"
-            "Train it first with step4.1_xgboost_noise_model.py"
+            "Train it first with step3.2_xgboost_noise_model.py"
         )
 
     print(f"Loading model from {model_path} ...")
