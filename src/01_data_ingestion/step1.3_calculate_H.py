@@ -9,7 +9,6 @@ Output: excel_output/<YYYYMMDD>.xlsx
   Sheet "FRD"  — DATE, TIME, DOY, FRDX, FRDY, FRDZ, FRDF, FRDH
 """
 
-import math
 import pandas as pd
 from pathlib import Path
 
@@ -93,7 +92,8 @@ def load_frd(date_str: str) -> pd.DataFrame | None:
 
     df = pd.DataFrame(rows)
 
-    # Linear interpolation for short gaps only (≤600 s); multi-hour outages stay NaN
+    # Linear interpolation of at most 600 consecutive samples (600 s) per gap;
+    # the remainder of a longer outage stays NaN
     for col in ("FRDX", "FRDY", "FRDZ", "FRDF"):
         df[col] = df[col].interpolate(method="linear", limit=600)
 

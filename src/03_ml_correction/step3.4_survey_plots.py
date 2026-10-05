@@ -5,9 +5,9 @@ Panels (shared x-axis):
   1. FRDH                       - FRD ground station horizontal field
   2. EZIEH                      - EZIE satellite horizontal field
   3. ctemp                      - satellite temperature
-  4. Estimated Bh noise         - EZIEH minus linear FRDH prediction
-  5. ML Predicted Bh noise      - XGBoost output
-  6. EZIEH denoised             - EZIEH minus predicted noise
+  4. EZIEH_noise_ref            - EZIEH minus linear FRDH prediction (EZIEH_ref)
+  5. EZIEH_noise_pred           - XGBoost-predicted EZIEH_noise_ref
+  6. tempo_h                    - EZIEH minus EZIEH_noise_pred (TEMPO-corrected)
 
 Usage
 -----
@@ -24,7 +24,6 @@ Defaults
 from __future__ import annotations
 
 import argparse
-import numpy as np
 import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
@@ -36,8 +35,8 @@ from xgboost import XGBRegressor
 from _feature_engineering import SECONDS_PER_ROW, add_features, feature_cols
 
 # ---------------------------------------------------------------------------
-# Feature engineering (shared with step3.2_xgboost_noise_model.py and
-# step3.3_xgboost_inference.py via _feature_engineering.py)
+# Feature engineering (shared with step3.2, step3.3 and step3.8 via
+# _feature_engineering.py)
 # ---------------------------------------------------------------------------
 
 def _detect_resolution(model_path: Path):
@@ -57,11 +56,37 @@ PANEL_CFG = [
     ("FRDH",            "FRDH (nT)",             "#2ca02c"),
     ("EZIEH",           "EZIEH (nT)",             "#1f77b4"),
     ("ctemp",           "ctemp (°C)",              "#8c564b"),
-    ("residual",        "Estimated Bh noise (nT)",           "#7f7f7f"),
-    ("noise_pred",      "ML Predicted Bh noise (nT)",    "#d62728"),
-    ("EZIEH_denoised",  "EZIEH denoised (nT)",     "#9467bd"),
-    
+    ("residual",         "EZIEH_noise_ref (nT)",  "#7f7f7f"),   # column "residual" in the step2.1 CSVs
+    ("EZIEH_noise_pred", "EZIEH_noise_pred (nT)", "#d62728"),
+    ("tempo_h",          "tempo_h (nT)",          "#9467bd"),
 ]
+
+# Panels that share a y-scale so their fluctuation sizes are directly comparable.
+# Field panels sit at different baselines (FRDH ~21700 nT vs EZIEH ~17100 nT), so
+# they share a common nT span, each centred on its own midpoint. The two noise
+# panels are both centred near zero, so they share identical limits.
+SAME_SPAN_COLS   = ("FRDH", "EZIEH", "tempo_h")
+SAME_LIMITS_COLS = ("residual", "EZIEH_noise_pred")
+Y_PAD            = 0.05   # fraction of the span added above and below
+
+
+def _match_y_scales(axes, df: pd.DataFrame):
+    ax_of = {col: ax for ax, (col, _, _) in zip(axes, PANEL_CFG)}
+
+    span_cols = [c for c in SAME_SPAN_COLS if c in df.columns]
+    if span_cols:
+        span = max(df[c].max() - df[c].min() for c in span_cols) * (1 + 2 * Y_PAD)
+        for c in span_cols:
+            mid = (df[c].max() + df[c].min()) / 2
+            ax_of[c].set_ylim(mid - span / 2, mid + span / 2)
+
+    lim_cols = [c for c in SAME_LIMITS_COLS if c in df.columns]
+    if lim_cols:
+        lo = min(df[c].min() for c in lim_cols)
+        hi = max(df[c].max() for c in lim_cols)
+        pad = (hi - lo) * Y_PAD
+        for c in lim_cols:
+            ax_of[c].set_ylim(lo - pad, hi + pad)
 
 
 def plot_day(df: pd.DataFrame, date_str: str, model_label: str, out_path: Path):
@@ -79,6 +104,7 @@ def plot_day(df: pd.DataFrame, date_str: str, model_label: str, out_path: Path):
         ax.set_ylabel(ylabel, fontsize=16)
         ax.grid(True, linewidth=0.4, alpha=0.4)
         ax.tick_params(axis="y", labelsize=13)
+    _match_y_scales(axes, df)
 
     day_start = pd.Timestamp(date_str)
     day_end   = day_start + pd.Timedelta(days=1)
@@ -87,7 +113,7 @@ def plot_day(df: pd.DataFrame, date_str: str, model_label: str, out_path: Path):
     axes[-1].xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
     axes[-1].xaxis.set_major_locator(mdates.HourLocator(interval=2))
     axes[-1].tick_params(axis="x", labelsize=13)
-    axes[-1].set_xlabel("UTC", fontsize=16)
+    axes[-1].set_xlabel("Time (UTC)", fontsize=16)
 
     plt.tight_layout(rect=[0, 0, 1, 0.997])
     fig.savefig(out_path, dpi=120, bbox_inches="tight")
@@ -156,8 +182,8 @@ def main():
             valid = df_feat[cols].notna().all(axis=1)
             df_feat = df_feat[valid].copy()
 
-            df_feat["noise_pred"]     = model.predict(df_feat[cols].values)
-            df_feat["EZIEH_denoised"] = df_feat["EZIEH"] - df_feat["noise_pred"]
+            df_feat["EZIEH_noise_pred"] = model.predict(df_feat[cols].values)
+            df_feat["tempo_h"]          = df_feat["EZIEH"] - df_feat["EZIEH_noise_pred"]
 
             out_path = out_dir / f"{date_str}.png"
             plot_day(df_feat, date_str, model_label, out_path)

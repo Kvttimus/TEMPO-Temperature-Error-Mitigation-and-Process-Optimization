@@ -3,8 +3,9 @@ Before/After bar charts: raw step2 regression noise vs the XGBoost-corrected
 residual, each split by unfiltered vs filtered data, for the 1-minute and
 5-minute models.
 
-"Before" = step2 regression residual (no ML correction)
-"After"  = residual - Bh_noise_prediction (XGBoost-corrected)
+"Before" = EZIEH_noise_ref, the step2 regression residual (no ML correction)
+"After"  = EZIEH_noise_ref - EZIEH_noise_pred (XGBoost-corrected)
+           (CSV columns: residual, Bh_noise_prediction)
 Each is computed on both the UNFILTERED and FILTERED test-prediction CSVs,
 giving 4 bars per metric: Before Unfiltered, Before Filtered,
 After Unfiltered, After Filtered.
@@ -25,7 +26,7 @@ from pathlib import Path
 
 OUT_DIR = Path("regression")
 
-# Validated ordinal 4-step blue ramp (dataviz skill: --ordinal, light mode, PASS)
+# Ordinal 4-step blue ramp, light to dark (checked for contrast on a light background)
 COLOR_BEFORE_UNFILTERED = "#b7d4f7"
 COLOR_BEFORE_FILTERED   = "#86b6ef"
 COLOR_AFTER_UNFILTERED  = "#4d8fd6"
@@ -65,7 +66,7 @@ BAR_COLORS = [COLOR_BEFORE_UNFILTERED, COLOR_BEFORE_FILTERED,
 
 def plot_before_after(metrics: dict, label: str, out_path: Path):
     fig, axes = plt.subplots(1, 2, figsize=(10, 5.5))
-    fig.suptitle(f"Bh Noise Error — {label}", fontsize=12, fontweight="bold", color=INK, y=0.97)
+    fig.suptitle(f"EZIEH_noise_ref Error — {label}", fontsize=12, fontweight="bold", color=INK, y=0.97)
 
     panels = [
         ("RMSE", [metrics["rmse_before_unfiltered"], metrics["rmse_before_filtered"],
@@ -114,8 +115,8 @@ def main():
         ("xgboost_test_predictions_5min_unfiltered.csv", "xgboost_test_predictions_5min.csv",
          "5-Minute", "before_after_errors_5min.png"),
     ]
-    for before_file, after_file, label, out_name in jobs:
-        metrics = compute_metrics(OUT_DIR / before_file, OUT_DIR / after_file)
+    for unfiltered_file, filtered_file, label, out_name in jobs:
+        metrics = compute_metrics(OUT_DIR / unfiltered_file, OUT_DIR / filtered_file)
         print(f"{label}: {metrics}")
         plot_before_after(metrics, label, OUT_DIR / out_name)
 

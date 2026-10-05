@@ -1,10 +1,9 @@
-"""Shared feature engineering for the XGBoost Bh-noise model.
+"""Shared feature engineering for the XGBoost EZIEH_noise_ref model.
 
-Single source of truth for step3.2 (training), step3.3 (inference), and
-step3.4 (survey plots) — these three previously each hand-duplicated this
-logic and silently drifted out of sync (one copy was missing the
-ctemp_std900 feature), so anything that changes window sizes, half-lives,
-or feature order belongs here, not in the callers.
+Single source of truth for step3.2 (training), step3.3 (inference),
+step3.4 (survey plots) and step3.8 (TEMPO vs FRD plots), so training and
+inference always compute identical features. Anything that changes window
+sizes, half-lives, or feature order belongs here, not in the callers.
 """
 from __future__ import annotations
 

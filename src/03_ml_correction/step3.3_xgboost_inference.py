@@ -1,5 +1,5 @@
 """
-Run the best saved XGBoost Bh-noise model (66-feature version, 1-second
+Run the default saved XGBoost EZIEH_noise_ref model (66-feature version, 1-second
 resolution) on new data.
 
 This matches the default model trained by step3.2_xgboost_noise_model.py
@@ -39,9 +39,8 @@ MODEL_PATH = Path("regression/xgboost_noise_model.json")
 
 
 # ---------------------------------------------------------------------------
-# Feature engineering (shared with step3.2_xgboost_noise_model.py and
-# step3.4_survey_plots.py via _feature_engineering.py; this script is fixed
-# at the 1-second resolution)
+# Feature engineering (shared with step3.2, step3.4 and step3.8 via
+# _feature_engineering.py; this script is fixed at the 1-second resolution)
 # ---------------------------------------------------------------------------
 
 FEATURE_COLS = feature_cols(1)
@@ -84,7 +83,7 @@ def run_inference(csv_path: Path, model: XGBRegressor, out_dir: Path | None) -> 
 
 
 def main():
-    parser = argparse.ArgumentParser(description="XGBoost Bh-noise inference (66-feature model)")
+    parser = argparse.ArgumentParser(description="XGBoost EZIEH_noise_ref inference (66-feature model)")
     parser.add_argument("input", help="CSV file or folder of CSVs")
     parser.add_argument("--model",   default=str(MODEL_PATH),
                         help=f"Path to model JSON (default: {MODEL_PATH})")

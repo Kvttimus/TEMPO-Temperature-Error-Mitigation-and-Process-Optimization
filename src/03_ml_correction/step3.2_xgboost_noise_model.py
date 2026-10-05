@@ -1,9 +1,10 @@
 """
-XGBoost model: predict Bh_noise (residual) from ctemp and EZIEH only.
+XGBoost model: predict EZIEH_noise_ref (column `residual`) from ctemp and EZIEH only.
 
-During training the pre-calculated residual (EZIEH - EZIE_Bh_Predicted) is used
+During training the pre-calculated residual (EZIEH - EZIEH_ref) is used
 as the target.  At inference time ONLY ctemp and EZIEH are needed — all derived
-features (lags, rolling stats, diffs) are computed from those two signals.
+features (rolling, cumulative and EMA anomalies, rolling std, interactions,
+squared terms) are computed from those two signals.
 
 Features engineered from ctemp + EZIEH (window sizes are always expressed in
 seconds; windows not exceeding the sample interval are dropped, e.g. the 30s
@@ -15,25 +16,32 @@ window is skipped at 1-min resolution):
   Interactions                   : anom<w>_inter
   Non-linear                     : EZIEH_anom<w>_sq, ctemp_anom<w>_sq
 
-Two axes of variation, selected via CLI flags:
+Three axes of variation, selected via CLI flags:
   --mode filtered|unfiltered
-      filtered   - trains on quiet-day-only data in 'training data/' with a
-                   standard MSE objective and a plain train/test eval set.
-      unfiltered - trains on all days (incl. storms) in 'regression/predicted/'
-                   with a Huber loss (reg:pseudohubererror) so extreme storm
-                   residuals don't dominate the gradient, and early-stops on
-                   quiet-day-only test MAE (storm days excluded from eval_set
-                   via regression/daily_summary.csv) for an apples-to-apples
-                   comparison against the filtered model.
+      filtered   - trains on the high-residual-days-removed data in
+                   'training data/' with a standard MSE objective.
+      unfiltered - an "all the data" model: trains, early-stops, and is
+                   scored on every day in 'regression/predicted/', with no
+                   day singled out. Uses a Huber loss (reg:pseudohubererror)
+                   so extreme residuals don't dominate the gradient.
   --resolution 1sec|1min|5min
       Resamples input to the given interval (median) before feature
       engineering; sub-sample windows are dropped and min_child_weight is
       scaled down for the smaller per-day row counts at coarser resolutions.
+  --features all|ctemp|ezieh
+      Input ablation. 'all' (default) is the full TEMPO model. 'ctemp' keeps
+      only features derived from ctemp, 'ezieh' only those derived from
+      EZIEH; the ctemp x EZIEH interaction features use both signals and are
+      dropped from both single-input variants. Everything else (params,
+      split, early stopping) is unchanged.
 
-Split: chronological 80/20 at the day level.
+Split: chronological 60/20/20 at the day level (see _training_data.py).
+Early stopping watches the validation days only; the test days are never
+seen until the final evaluation.
 
-Outputs (suffix encodes resolution + mode, e.g. _5min_unfiltered; the
-1sec+filtered combination — the original/default model — has no suffix):
+Outputs (suffix encodes resolution + mode + ablation, e.g. _5min_unfiltered,
+_1min_ctemp_only; the 1sec+filtered+all combination — the original/default
+model — has no suffix):
   regression/xgboost_noise_model<suffix>.json
   regression/xgboost_test_predictions<suffix>.csv
   regression/xgboost_results<suffix>.png
@@ -42,12 +50,12 @@ Usage
 -----
   python step3.2_xgboost_noise_model.py --mode filtered --resolution 1sec
   python step3.2_xgboost_noise_model.py --mode unfiltered --resolution 5min
+  python step3.2_xgboost_noise_model.py --mode filtered --resolution 1min --features ctemp
 """
 from __future__ import annotations
 
 import argparse
 import numpy as np
-import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -55,50 +63,19 @@ from pathlib import Path
 from xgboost import XGBRegressor
 from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
 
-from _feature_engineering import add_features, feature_cols
+from _training_data import RESOLUTIONS, TARGET, load_splits
 
-TRAIN_DATA_DIR       = Path("training data")
-UNFILTERED_DATA_DIR  = Path("regression/predicted")
-SUMMARY_CSV          = Path("regression/daily_summary.csv")
-OUT_DIR              = Path("regression")
+OUT_DIR = Path("regression")
 
-TARGET                  = "residual"
-EARLY_STOPPING_ROUNDS   = 100
-HUBER_SLOPE              = 100.0   # unfiltered mode only; see module docstring
-STORM_RESIDUAL_RANGE_NT = 250.0    # unfiltered mode only; matches step3.1 filter threshold
+EARLY_STOPPING_ROUNDS = 100
+HUBER_SLOPE           = 100.0   # unfiltered mode only; see module docstring
 
-# Per-resolution knobs: pandas resample rule (None = raw, no resampling),
-# minimum rows to keep a day, XGBoost min_child_weight (scaled down for
-# coarser resolutions' smaller per-day row counts), and scatter-plot styling.
-RESOLUTIONS = {
-    "1sec": dict(resample=None,   seconds_per_row=1,   min_rows=60, min_child_weight=15, scatter_size=0.3, scatter_alpha=0.15),
-    "1min": dict(resample="1min", seconds_per_row=60,  min_rows=10, min_child_weight=5,   scatter_size=1.5, scatter_alpha=0.2),
-    "5min": dict(resample="5min", seconds_per_row=300, min_rows=5,  min_child_weight=3,   scatter_size=3,   scatter_alpha=0.3),
+# --features ablation: which engineered columns each variant keeps
+FEATURE_SETS = {
+    "all":   lambda c: True,
+    "ctemp": lambda c: c.startswith("ctemp_"),
+    "ezieh": lambda c: c.startswith("EZIEH_"),
 }
-
-# ---------------------------------------------------------------------------
-# Loader
-# ---------------------------------------------------------------------------
-
-def load_day(csv_path: Path, resolution: str, cols: list[str]) -> pd.DataFrame | None:
-    cfg = RESOLUTIONS[resolution]
-    df = pd.read_csv(csv_path, parse_dates=["time"])
-    if "ctemp" not in df.columns or df["ctemp"].isna().all():
-        return None
-
-    if cfg["resample"] is None:
-        df = df[["time", "EZIEH", "ctemp", TARGET]].dropna(subset=["EZIEH", "ctemp", TARGET])
-    else:
-        df = df.set_index("time")[["EZIEH", "ctemp", TARGET]].resample(cfg["resample"]).median()
-        df = df.dropna(subset=["EZIEH", "ctemp", TARGET]).reset_index()
-
-    if len(df) < cfg["min_rows"]:
-        return None
-
-    df = add_features(df, cfg["seconds_per_row"])
-    df["date"] = csv_path.stem
-    return df.dropna(subset=cols + [TARGET])
-
 
 # ---------------------------------------------------------------------------
 # XGBoost params
@@ -122,7 +99,7 @@ def build_xgb_params(resolution: str, mode: str) -> dict:
         params.update(
             objective    = "reg:pseudohubererror",
             huber_slope  = HUBER_SLOPE,
-            eval_metric  = "mae",   # more robust than RMSE to storm outliers
+            eval_metric  = "mae",   # more robust than RMSE to extreme residuals
         )
     return params
 
@@ -134,69 +111,30 @@ def build_xgb_params(resolution: str, mode: str) -> dict:
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--mode", choices=["filtered", "unfiltered"], default="filtered",
-                         help="filtered = quiet-day-only training data; unfiltered = all days, Huber loss")
+                         help="filtered = high-residual days removed; unfiltered = all days, Huber loss")
     parser.add_argument("--resolution", choices=list(RESOLUTIONS), default="1sec",
                          help="resample interval for input data before feature engineering")
+    parser.add_argument("--features", choices=list(FEATURE_SETS), default="all",
+                         help="input ablation: all = full model; ctemp / ezieh = features from that signal only")
     args = parser.parse_args()
     mode, resolution = args.mode, args.resolution
 
-    cfg  = RESOLUTIONS[resolution]
-    cols = feature_cols(cfg["seconds_per_row"])
-    suffix = ("" if resolution == "1sec" else f"_{resolution}") + ("_unfiltered" if mode == "unfiltered" else "")
+    cfg    = RESOLUTIONS[resolution]
+    suffix = (("" if resolution == "1sec" else f"_{resolution}")
+              + ("_unfiltered" if mode == "unfiltered" else "")
+              + ("" if args.features == "all" else f"_{args.features}_only"))
 
-    data_dir = TRAIN_DATA_DIR if mode == "filtered" else UNFILTERED_DATA_DIR
-    csv_files = sorted(data_dir.glob("*.csv"))
-    dates = [f.stem for f in csv_files]
-    print(f"Days available: {len(dates)}  (mode={mode}, resolution={resolution})")
+    train, val, test, cols, dates = load_splits(mode, resolution)
+    cols = [c for c in cols if FEATURE_SETS[args.features](c)]
+    print(f"Feature set: {args.features}  ({len(cols)} features)")
 
-    frames, skipped = [], 0
-    for f in csv_files:
-        df = load_day(f, resolution, cols)
-        if df is not None:
-            frames.append(df)
-        else:
-            skipped += 1
-    if skipped:
-        print(f"Skipped {skipped} days (missing ctemp or insufficient data)")
-
-    full = pd.concat(frames, ignore_index=True)
-    print(f"Total rows loaded: {len(full):,}  |  Features: {len(cols)}")
-
-    # 80/20 chronological day-level split
-    n_train_days = int(len(dates) * 0.8)
-    train_dates  = set(dates[:n_train_days])
-    test_dates   = set(dates[n_train_days:])
-
-    train = full[full["date"].isin(train_dates)].copy()
-    test  = full[full["date"].isin(test_dates)].copy()
-
-    print(f"\nChronological 80/20 split:")
-    print(f"  Train: {len(train_dates)} days  ({len(train):,} rows)  "
-          f"{min(train_dates)} -> {max(train_dates)}")
-    print(f"  Test : {len(test_dates)} days  ({len(test):,} rows)  "
-          f"{min(test_dates)} -> {max(test_dates)}")
-
-    X_train = train[cols].values
-    y_train = train[TARGET].values
-    X_test  = test[cols].values
-    y_test  = test[TARGET].values
-
-    if mode == "unfiltered":
-        # Identify quiet vs storm test days so early stopping (and the
-        # headline comparison metric) isn't polluted by storm-day outliers.
-        summary = pd.read_csv(SUMMARY_CSV)
-        summary["date"] = summary["date"].astype(int).astype(str)
-        storm_days = set(summary.loc[summary["residual_range_nT"] > STORM_RESIDUAL_RANGE_NT, "date"])
-        test["date_str"] = test["date"].astype(str)
-        test_quiet   = test[~test["date_str"].isin(storm_days)]
-        n_storm_test = test["date"].nunique() - test_quiet["date"].nunique()
-        print(f"  Test quiet days : {test_quiet['date'].nunique()}  |  storm days: {n_storm_test}")
-        X_eval, y_eval = test_quiet[cols].values, test_quiet[TARGET].values
-    else:
-        X_eval, y_eval = X_test, y_test
+    X_train, y_train = train[cols].values, train[TARGET].values
+    X_test,  y_test  = test[cols].values,  test[TARGET].values
+    # Early stopping sees the validation days only; test stays untouched.
+    X_eval,  y_eval  = val[cols].values,   val[TARGET].values
 
     xgb_params = build_xgb_params(resolution, mode)
-    extra = f"Huber slope={HUBER_SLOPE} nT, early-stop on quiet-day MAE, " if mode == "unfiltered" else ""
+    extra = f"Huber slope={HUBER_SLOPE} nT, early-stop on val MAE, " if mode == "unfiltered" else ""
     print(f"\nTraining XGBoost  ({extra}"
           f"max_estimators={xgb_params['n_estimators']}, "
           f"max_depth={xgb_params['max_depth']}, "
@@ -217,18 +155,16 @@ def main():
                 float(r2_score(yt, yp)))
 
     y_pred_train = model.predict(X_train)
+    y_pred_eval  = model.predict(X_eval)
     y_pred_test  = model.predict(X_test)
     rmse_tr, mae_tr, r2_tr = metrics(y_train, y_pred_train)
-    rmse_te, mae_te, r2_te = metrics(y_test, y_pred_test)
+    rmse_va, mae_va, r2_va = metrics(y_eval,  y_pred_eval)
+    rmse_te, mae_te, r2_te = metrics(y_test,  y_pred_test)
 
-    print(f"\n--- Results ---")
+    print("\n--- Results ---")
     print(f"  Train  RMSE={rmse_tr:.3f} nT   MAE={mae_tr:.3f} nT   R2={r2_tr:.4f}")
+    print(f"  Val    RMSE={rmse_va:.3f} nT   MAE={mae_va:.3f} nT   R2={r2_va:.4f}")
     print(f"  Test   RMSE={rmse_te:.3f} nT   MAE={mae_te:.3f} nT   R2={r2_te:.4f}")
-
-    if mode == "unfiltered":
-        y_pred_eval = model.predict(X_eval)
-        rmse_q, mae_q, r2_q = metrics(y_eval, y_pred_eval)
-        print(f"  Test (quiet)    RMSE={rmse_q:.3f} nT   MAE={mae_q:.3f} nT   R2={r2_q:.4f}  <-- apples-to-apples vs filtered model")
 
     # Save model
     model_path = OUT_DIR / f"xgboost_noise_model{suffix}.json"
@@ -236,7 +172,6 @@ def main():
     print(f"\nModel saved -> {model_path}")
 
     # Save test predictions
-    test = test.copy()
     test["Bh_noise_prediction"] = y_pred_test
     pred_out = test[["date", "time", "EZIEH", "ctemp", TARGET, "Bh_noise_prediction"]]
     pred_csv = OUT_DIR / f"xgboost_test_predictions{suffix}.csv"
@@ -245,20 +180,19 @@ def main():
 
     # Feature importance
     importances = dict(zip(cols, model.feature_importances_))
-    print(f"\nTop feature importances:")
+    print("\nTop feature importances:")
     for feat, imp in sorted(importances.items(), key=lambda x: -x[1])[:10]:
         print(f"  {feat:25s}: {imp:.4f}")
 
     # --- Plot ---
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-    title = f"XGBoost Bh noise prediction ({mode}"
+    title = f"XGBoost EZIEH_noise_ref prediction ({mode}"
+    if args.features != "all":
+        title += f", {args.features} features only"
     if resolution != "1sec":
         title += f", {resolution} resample"
     title += f", {len(dates)} days)  |  "
-    if mode == "unfiltered":
-        title += f"Test quiet: RMSE={rmse_q:.1f} nT  MAE={mae_q:.1f} nT  R2={r2_q:.3f}"
-    else:
-        title += f"Test: RMSE={rmse_te:.1f} nT  MAE={mae_te:.1f} nT  R2={r2_te:.3f}"
+    title += f"Test: RMSE={rmse_te:.1f} nT  MAE={mae_te:.1f} nT  R2={r2_te:.3f}"
     fig.suptitle(title, fontsize=11)
 
     # Predicted vs actual
@@ -273,8 +207,8 @@ def main():
     ax.plot([-lim, lim], [-lim, lim], "k--", linewidth=0.8)
     ax.set_xlim(-lim, lim)
     ax.set_ylim(-lim, lim)
-    ax.set_xlabel("Actual residual (nT)")
-    ax.set_ylabel("Predicted residual (nT)")
+    ax.set_xlabel("EZIEH_noise_ref (nT)")
+    ax.set_ylabel("EZIEH_noise_pred (nT)")
     ax.set_title(f"Test set: Predicted vs Actual{clipped}")
     ax.grid(True, linewidth=0.3, alpha=0.5)
 

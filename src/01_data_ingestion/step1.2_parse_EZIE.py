@@ -26,7 +26,6 @@ Binary record layout (160 bytes, little-endian):
      152  imu_ctemp  float32  °C  (IMU temperature)
 """
 
-import os
 import csv
 import gzip
 import struct

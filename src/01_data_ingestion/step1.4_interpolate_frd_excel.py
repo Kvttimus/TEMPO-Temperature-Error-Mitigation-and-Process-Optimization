@@ -2,7 +2,9 @@
 Back-fill interpolation into the FRD sheet of existing Excel files.
 Only touches the 24 days that have missing FRD data.
 All other sheets (EZIE, Predicted) are preserved unchanged.
-Gaps <= 600 s are filled; longer outages stay NaN.
+At most 600 consecutive seconds of each gap are filled; the remainder of a
+longer outage stays NaN. These workbooks are archival: Stage 2 reads the raw
+FRD files directly.
 """
 from __future__ import annotations
 
