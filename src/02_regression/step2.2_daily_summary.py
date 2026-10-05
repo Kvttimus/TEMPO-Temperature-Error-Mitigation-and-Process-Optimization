@@ -1,5 +1,5 @@
 """
-Compute per-day summary statistics and write to a single Excel file.
+Compute per-day summary statistics and write to a single CSV file.
 
 Columns:
   date,
@@ -10,12 +10,13 @@ Columns:
 
 Sources:
   regression/predicted/<YYYYMMDD>.csv  ->  EZIEH, residual  (1-second native;
-      EZIEH_mean/range and residual_mean/range use the full 1-second series,
-      but residual is resampled to 1-min medians before merging with ctemp
-      below so the two series are on a common grid)
+      EZIEH_mean/range and residual_mean use the full 1-second series.
+      residual_range_nT is the max-min of 1-min medians — the same definition
+      step3.1 uses to filter days — and the 1-min residual is also what gets
+      merged with ctemp so the two series are on a common grid)
   humanReadable_EZIE_data/<YYYYMMDD>.csv  ->  ctemp (resampled to 1-min to align)
 
-Output: regression/daily_summary.xlsx  (sheet: DailySummary)
+Output: regression/daily_summary.csv
 """
 from __future__ import annotations
 
@@ -55,25 +56,29 @@ def main():
         ezieh    = pred["EZIEH"].dropna()
         residual = pred["residual"].dropna()
 
+        # pred is 1-second native; 1-min medians are used both for the
+        # residual range (same definition as the step3.1 filter, so a single
+        # spike sample doesn't inflate a day's range) and for the ctemp merge
+        # below, which then lands on the same grid as ctemp_df instead of
+        # only matching the ~1/60 of rows that happen to fall on a minute mark.
+        residual_1min = (
+            pred[["time", "residual"]]
+            .set_index("time")
+            .resample("1min").median()
+            .reset_index()
+        )
+        res_1min = residual_1min["residual"].dropna()
+
         ezieh_mean  = float(ezieh.mean())
         ezieh_range = float(ezieh.max() - ezieh.min())
         res_mean    = float(residual.mean())
-        res_range   = float(residual.max() - residual.min())
+        res_range   = float(res_1min.max() - res_1min.min())
 
         ctemp_mean  = float("nan")
         ctemp_range = float("nan")
         pearson_r   = float("nan")
 
         if ctemp_df is not None:
-            # pred is 1-second native; resample to 1-min medians so the merge
-            # below lands on the same grid as ctemp_df instead of only
-            # matching the ~1/60 of rows that happen to fall on a minute mark.
-            residual_1min = (
-                pred[["time", "residual"]]
-                .set_index("time")
-                .resample("1min").median()
-                .reset_index()
-            )
             merged = (
                 residual_1min
                 .merge(ctemp_df, on="time", how="inner")

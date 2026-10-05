@@ -1,6 +1,12 @@
 """
-Fast version of step3.1 — saves per-day predictions as CSVs, skips Excel I/O.
-Adds the Predicted sheet to Excel files as a separate final pass (step3.1c).
+Per-day linear regression EZIEH_ref = a*FRDH + b, fit on 00:00-12:00 UTC and
+applied to the full day; the residual EZIEH_noise_ref = EZIEH - EZIEH_ref is the
+Stage 3 training target.
+
+Reads the per-day EZIE-Mag CSVs (step1.2) and the raw FRD files (step1.1)
+directly, at 1-second medians; FRD fill-value samples are dropped, not
+interpolated. Days whose prediction CSV already exists are skipped, so the
+script can be resumed.
 
 Outputs
 -------
@@ -28,7 +34,7 @@ TRAIN_HOURS  = 12
 MIN_FRDH_RANGE = 5.0  # nT — below this the training data is too flat to fit reliably
 
 
-def load_ezie_1min(date_str: str) -> pd.DataFrame | None:
+def load_ezie_1s(date_str: str) -> pd.DataFrame | None:
     path = EZIE_DIR / f"{date_str}.csv"
     if not path.exists():
         return None
@@ -43,7 +49,7 @@ def load_ezie_1min(date_str: str) -> pd.DataFrame | None:
     return df.reset_index()
 
 
-def load_frd_1min(date_str: str) -> pd.DataFrame | None:
+def load_frd_1s(date_str: str) -> pd.DataFrame | None:
     path = FRD_DIR / f"FRD_{date_str}_1sec.sec"
     if not path.exists():
         return None
@@ -86,11 +92,10 @@ def main():
         out_csv = PRED_DIR / f"{date_str}.csv"
         if out_csv.exists():
             print(f"  [{i:>3}/{len(common_dates)}] {date_str}: already done, skipping")
-            # Still load coeffs from existing CSV for summary
             continue
 
-        ezie = load_ezie_1min(date_str)
-        frd  = load_frd_1min(date_str)
+        ezie = load_ezie_1s(date_str)
+        frd  = load_frd_1s(date_str)
         if ezie is None or frd is None:
             continue
 
@@ -130,7 +135,7 @@ def main():
             "n_total":           int(len(merged)),
         })
 
-        # Save prediction CSV (fast — no Excel I/O)
+        # Save the per-day prediction CSV
         save_cols = ["time", "FRDH", "EZIEH", "EZIE_Bh_Predicted", "residual"]
         if "ctemp" in merged.columns:
             save_cols.append("ctemp")
@@ -144,15 +149,21 @@ def main():
         print("No new results (all days already processed or no data).")
         return
 
-    # Save daily coefficients
+    # Save daily coefficients, merged with any from earlier runs so a resumed run
+    # (which skips days already done) doesn't drop their coefficients
     coeffs_df   = pd.DataFrame(daily_results)
     coeffs_path = OUT_DIR / "daily_coeffs.csv"
+    if coeffs_path.exists():
+        previous  = pd.read_csv(coeffs_path, dtype={"date": str})
+        previous  = previous[~previous["date"].isin(coeffs_df["date"])]
+        coeffs_df = pd.concat([previous, coeffs_df], ignore_index=True)
+    coeffs_df = coeffs_df.sort_values("date").reset_index(drop=True)
     coeffs_df.to_csv(coeffs_path, index=False)
 
     good    = coeffs_df[~coeffs_df["degenerate"]]
     n_degen = int(coeffs_df["degenerate"].sum())
-    print(f"\n--- Summary: {len(coeffs_df)} days processed  ({n_degen} flagged degenerate) ---")
-    print(f"  [good days only]")
+    print(f"\n--- Summary: {len(coeffs_df)} days  ({len(daily_results)} new, {n_degen} flagged degenerate) ---")
+    print("  [good days only]")
     print(f"  a        : mean={good['a'].mean():.4f},  std={good['a'].std():.4f}")
     print(f"  b        : mean={good['b'].mean():.2f},  std={good['b'].std():.2f} nT")
     print(f"  R2_train : mean={good['r2_train_12h'].mean():.4f}")
